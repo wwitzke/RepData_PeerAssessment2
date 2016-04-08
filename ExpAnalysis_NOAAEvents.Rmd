@@ -1,0 +1,561 @@
+---
+title: "Exploratory Analysis of Weather Events with High Mortality and Economic Impact"
+author: "Wayne Witzke"
+output: 
+  html_document:
+    keep_md: true
+---
+
+## Synopsis
+
+**TODO**
+
+## Preliminaries
+
+#### Globals
+This analysis presumes that there is a specific directory structure in place.
+That structure is defined here.
+```{r global_options}
+knitr::opts_chunk$set( fig.path = "figure/" );
+rawdata.dir = "raw";
+tidydata.dir = "data";
+rawfile = file.path( rawdata.dir, "RawData" );
+tidyfile = file.path( tidydata.dir, "TidyData.rds" );
+library(data.table);
+
+```
+
+#### System Information
+This analysis was performed using the hardware and software listed in this
+section.
+
+```{r system_info}
+sessionInfo();
+```
+
+## Data Processing
+
+#### Data collection and processing overview
+This analysis uses data from the NOAA storm database. This data is
+programmatically downloaded from [this](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2)
+location as part of the analysis. Information about this data set can be found
+at the National Weather Service [Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)
+and the National Climatic Data Center Storm Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf).
+
+Several parts of the data tidying process are packaged in whole or in part as
+reusable and are replicated here as functions.
+
+#### GetRawFile function
+This function will fetch a file from an online location, timestamp it, and then
+return the timestamp. It only does this if the `output.file` doesn't already
+exist. If it does, then it will merely return the timestamp for the already
+saved raw data set.
+
+This function will also create the raw data directory, if necessary.
+```{r GetRawFile_function}
+GetRawFile = function( url, output.file = rawfile )
+{
+    if ( !dir.exists( rawdata.dir ) )
+    {
+        dir.create( rawdata.dir, recursive = TRUE );
+    }
+
+    timestamp = "";
+    timestamp.file = paste( output.file, "timestamp", sep = "." );
+
+    if ( !file.exists( output.file ) )
+    {
+        message( "Downloading raw data." );
+        timestamp = date();
+        download.file(
+            url = url,
+            destfile = output.file
+        );
+        writeLines( timestamp, timestamp.file );
+    }
+    else
+    {
+        message( "Using existing raw data." );
+        timestamp = readLines( timestamp.file );
+    }
+
+    suppressWarnings(
+        unzip( output.file, overwrite = FALSE, exdir = rawdata.dir )
+    );
+
+    return(timestamp);
+}
+```
+
+We can use the GetRawFile function to reproducibly fetch the raw data file.
+In this case, this will FAIL to unzip the target file.
+```{r get_raw_file}
+cat(
+    "Raw data downloaded on",
+    GetRawFile("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"),
+    "\n"
+);
+```
+
+#### Tidying the data
+Because of the size of this data set, here we conditionally tidy the data
+dependant upon whether a clean data file, `TidyData.rds`, already exists,
+indicating that the data processing routines in this analysis have already been
+run and the result of that processing has been saved for future use. If it
+does, then that file is used instead of the tidying operation. Note that the
+existence of the `TidyData.rds` file should have *no* impact on the analysis,
+except for shortening this data processing step. Also note that `TidyData.rds`
+will be produced as a result of the data processing steps in this analysis.
+
+```{r check_get_tidy_data}
+
+weather.table = NA;
+dirtydata = TRUE;
+
+if ( file.exists( tidyfile ) )
+{
+    message( "Reading saved tidy data set." );
+    weather.table = readRDS( tidyfile );
+    dirtydata = FALSE;
+}
+
+```
+
+If there was no tidy data file, then the raw data must be processed to be used
+in the analysis. 
+
+The raw data is compressed using bzip2, which, unfortunately, cannot at this
+time be natively read by `fread`, the file reading component of `data.table`.
+The following code decompresses the file, but it is **not** generally portable.
+It requires that bunzip2 be installed, and may require that the system be
+unix-like. The alternative is to use R connections, but those will be much,
+much slower than the file reading mechanism provided by `fread`.
+
+Also, to avoid decompressing the data file every time, we first check to see
+if the uncompressed data file already exists.
+
+```{r unzip_raw_data, eval = dirtydata}
+message( "Creating tidy data set." );
+
+rawfile.decompressed = paste( rawfile, ".out", sep = "" );
+
+if ( !file.exists( rawfile.decompressed ) )
+{
+    system( paste( "bunzip2 -k", rawfile  ) );
+}
+
+```
+
+When we read in the data, only the beginning date for the event, event type,
+fatalities, injuries, property damage, property damage explanation, crop
+damage, and crop damage explanation are kept, as they will be the only
+variables contributing to the analysis.
+
+Note that reading the decompressed data will generate warnings. This appears to
+be due to certain columns containing multiline values. `fread` is capable of
+handling these multiline values, but the mechanism it uses for estimating the
+number of observations in the file does not appear to take these multiline
+values into account, resulting in an inflated estimate that does not match the
+actual number of lines read.
+
+```{r read_decompressed_weather_table, eval = dirtydata}
+weather.table =
+    fread(
+        rawfile.decompressed,
+        select = c(
+            "BGN_DATE",
+            "EVTYPE",
+            "FATALITIES",
+            "INJURIES",
+            "PROPDMG",
+            "PROPDMGEXP",
+            "CROPDMG",
+            "CROPDMGEXP"
+        ),
+        na.strings = "",
+        showProgress = FALSE
+    );
+
+str(weather.table);
+```
+
+As part of the data processing, we do some basic maintenance on the raw data
+that was just read.
+
+We change column names to lowercase (for ease of use), and we convert
+`bgn_date` to a Date variable.
+
+```{r fix_column_names, eval = dirtydata}
+names( weather.table ) = tolower( names( weather.table ) );
+names( weather.table );
+weather.table[ , bgn_date := as.Date(bgn_date, "%m/%d/%Y %H:%M:%S") ];
+
+```
+
+We also note, from the data documentation, that the only correct values for the
+`propdmgexp` and `cropdmgexp` columns are "K", "M", and "B", denoting
+"thousands", "millions" and "billions" of dollars, respectively. If we take a
+look at the actual values `propdmgexp` and `cropdmgexp`, though, we see that
+there are a large number of other values in observations for this variable,
+including lowercase "k" and "m".
+
+```{r check_explanations, eval = dirtydata}
+
+table( weather.table$propdmgexp );
+table( weather.table$cropdmgexp );
+
+```
+
+The lowercase values appear to be simple coding errors that can be fixed. The
+other values, however, cannot be fixed by a simple coding change. Similarly,
+if the explanation for damage is `NA`, then the damage amounts become
+ambiguous. However, there are only 342 observations in this data set where
+there is a problematic damage explanation value *and* the damage is not equal
+to zero. Furthermore, these problematic values only occur in the years 1993,
+1994, and 1995.
+
+```{r check_explanations_again, eval = dirtydata}
+weirdpropl = (
+    !(weather.table$propdmgexp %in% c( "K","M","B","k","m","b" ))
+    & weather.table$propdmg != 0
+);
+
+weirdprop = which( weirdpropl );
+
+length(weirdprop);
+table( weather.table[ weirdprop, propdmgexp ] );
+table( weather.table[ weirdprop, format(bgn_date, "%Y") ] );
+
+weirdcropl = (
+    !(weather.table$cropdmgexp %in% c( "K","M","B","k","m","b" ))
+    & weather.table$cropdmg != 0
+);
+
+weirdcrop = which( weirdcropl );
+length(weirdcrop);
+table( weather.table[ weirdcrop, cropdmgexp ] );
+table( weather.table[ weirdcrop, format(bgn_date, "%Y") ] );
+
+```
+
+Because the number of problematic observations is much smaller than the total
+number of observations, and because they occur in years that are less relevant
+to later analytical results, we choose to exclude them. We also clean up the
+remaining values in those variables, and turn them into factors.
+
+```{r fix_explanations, eval = dirtydata}
+
+weather.table[ , propdmgexp := toupper( propdmgexp ) ];
+weather.table[ , cropdmgexp := toupper( cropdmgexp ) ];
+
+notweirdl = !( weirdcropl | weirdpropl );
+
+weather.table = weather.table[ notweirdl, ];
+
+weather.table[
+    !( propdmgexp %in% c( "K","M","B" ) ),
+    propdmgexp := NA
+];
+weather.table[
+    !( cropdmgexp %in% c( "K","M","B" ) ),
+    cropdmgexp := NA
+];
+
+weather.table[ , propdmgexp := factor( propdmgexp ) ];
+weather.table[ , cropdmgexp := factor( cropdmgexp ) ];
+
+str(weather.table);
+
+```
+
+We would also like to turn the event type variable into a factor.
+Unfortunately, there are many problems with this variable. As an example, there
+are over 900 different values in this column, but the data documentation only
+has 48 possible values for the even type. 
+
+```{r check_evtype, eval = dirtydata}
+levels( factor( weather.table$evtype ) );
+```
+
+Note that valid values are:
+
+|                         |                     |                   |
+|-------------------------|---------------------|-------------------|
+| Astronomical Low Tide   | Avalanche           | Blizzard          |
+| Coastal Flood           | Cold/Wind Chill     | Debris Flow       |
+| Dense Fog               | Dense Smoke         | Drought           |
+| Dust Devil              | Dust Storm          | Excessive Heat    |
+| Extreme Cold/Wind Chill | Flash Flood         | Flood             |
+| Frost/Freeze            | Funnel Cloud        | Freezing Fog      |
+| Hail                    | Heat                | Heavy Rain        |
+| Heavy Snow              | High Surf           | High Wind         |
+| Hurricane (Typhoon)     | Ice Storm           | Lake-Effect Snow  |
+| Lakeshore Flood         | Lightning           | Marine Hail       |
+| Marine High Wind        | Marine Strong Wind  | Marine Tstm Wind  |
+| Rip Current             | Seiche              | Sleet             |
+| Storm Surge/Tide        | Strong Wind         | Thunderstorm Wind |
+| Tornado                 | Tropical Depression | Tropical Storm    |
+| Tsunami                 | Volcanic Ash        | Waterspout        |
+| Wildfire                | Winter Storm        | Winter Weather    |
+
+
+
+A majority of the discrepancy is caused by typos and similar transcription
+errors.
+
+
+    if ( !dir.exists( tidydata.dir ) )
+    {
+        dir.create( tidydata.dir, recursive = TRUE );
+    }
+    saveRDS( retval, retfile );
+
+
+
+
+#```{r make_tidy_data}
+#
+#
+#
+#```
+
+### What is mean total number of steps taken per day?
+#
+#To calculate the total steps taken per day, we can group our `steps.table` by
+#date. We can also take a look at the distribution of the total steps by
+#generating a histogram.
+#
+#```{r steps_histogram}
+#steps.by.date =
+#    steps.table[, list(total.steps = sum(steps, na.rm = TRUE)), by = date];
+#
+#head( steps.by.date );
+#
+#summary( steps.by.date$total.steps, na.rm = TRUE );
+#
+#steps.mean.by.date = steps.by.date[ , mean(total.steps, na.rm = TRUE) ];
+#steps.median.by.date = steps.by.date[ , median(total.steps, na.rm = TRUE) ];
+#
+#library( ggplot2 );
+#
+#gg.hist.steps =
+#    ggplot( steps.by.date, aes( total.steps ), show.legend = TRUE ) +
+#    geom_histogram( bins = 20, col="black", aes( fill=..count.. ) ) +
+#    labs( x = "Total Steps per Day", y = "Count" ) +
+#    labs( title = "Occurances of Total Steps Taken in One Day" ) +
+#    geom_vline(
+#        aes(
+#            xintercept = steps.mean.by.date,
+#            color = "Mean"
+#        ),
+#        size = 1,
+#        show.legend = TRUE
+#    ) +
+#    geom_vline(
+#        aes(
+#            xintercept = steps.median.by.date,
+#            color = "Median"
+#        ),
+#        size = 1,
+#        show.legend = TRUE
+#    ) +
+#    scale_color_manual(
+#        name = "",
+#        values = c( Mean = "red", Median = "green" )
+#    );
+#               
+#
+#print( gg.hist.steps );
+#
+#```
+#
+#The mean and median total steps per day are:
+#
+#```{r steps_mean_median, results = 'hold'}
+#cat( "The mean total steps per day is", steps.mean.by.date, "\n" );
+#cat( "The median total steps per day is", steps.median.by.date, "\n" );
+#```
+#
+### What is the average daily activity pattern?
+#
+#To determine average daily activity patterns, we can simply group by interval.
+#
+#```{r steps_time_series}
+#steps.by.interval =
+#    steps.table[, list(mean.steps = mean(steps, na.rm = TRUE)), by = interval];
+#
+#head( steps.by.interval );
+#
+#summary( steps.by.interval$mean.steps, na.rm = TRUE );
+#
+#steps.max.interval =
+#    steps.by.interval[ mean.steps == max(mean.steps, na.rm = TRUE), interval ];
+#
+#library( ggplot2 );
+#
+#gg.mean.steps =
+#    ggplot( steps.by.interval, aes( interval, mean.steps ) ) +
+#    geom_line( color = "cyan3" ) +
+#    labs( x = "Interval", y = "Number of Steps" ) +
+#    labs( title = "Average Daily Activity Pattern" );
+#
+#print( gg.mean.steps );
+#
+#cat(
+#    "The maximum average steps occurs during the interval at minute",
+#    steps.max.interval,
+#    "\n"
+#);
+#
+#```
+#
+### Imputing missing values
+#
+#There may be some bias introduced into the dataset due to missing values. So,
+#how many missing values do we have?
+#
+#```{r missing_values, results = 'hold'}
+#cat( "Missing steps", sum(is.na( steps.table$steps )), "\n");
+#cat( "Missing dates", sum(is.na( steps.table$date )), "\n");
+#cat( "Missing intervals", sum(is.na( steps.table$interval )), "\n");
+#
+#cat(
+#    "Proportion of missing steps is",
+#    sum( is.na( steps.table$steps ) )/nrow( steps.table ),
+#    "\n"
+#);
+#
+#```
+#
+#So, only steps are missing from the dataset, which is good, but over 13% of
+#entries for steps are `NA`, which may be very bad. We can estimate what these
+#missing values might be by replacing them with the median steps for that
+#interval. Apparently both mean and median are not good choices for imputation,
+#but in this assignment we are allowed to use simple imputed values. I choose
+#median because this dataset appears to have some skew in it.
+#
+#```{r fix_missing_steps}
+#
+#steps.table.fixed = data.table::copy(steps.table);
+#steps.table.fixed[ ,
+#    steps := ifelse(is.na(steps), median(steps, na.rm = TRUE), steps),
+#    by = interval
+#];
+#
+#str(steps.table.fixed);
+#
+#summary(steps.table$steps);
+#summary(steps.table.fixed$steps);
+#
+#```
+#
+#Now, we create a histogram similar to the one created earlier.
+#
+#```{r fixed_steps_histogram}
+#steps.by.date.fixed =
+#    steps.table.fixed[ , list(total.steps = sum(steps)), by = date ];
+#
+#head( steps.by.date.fixed );
+#
+#summary( steps.by.date.fixed$total.steps );
+#
+#steps.mean.by.date.fixed = steps.by.date.fixed[ , mean(total.steps) ];
+#steps.median.by.date.fixed = steps.by.date.fixed[ , median(total.steps) ];
+#
+#library( ggplot2 );
+#
+#gg.hist.steps.fixed =
+#    ggplot( steps.by.date.fixed, aes( total.steps ), show.legend = TRUE ) +
+#    geom_histogram( bins = 20, col="black", aes( fill=..count.. ) ) +
+#    labs( x = "Total Steps per Day", y = "Count" ) +
+#    labs( title = "Occurances of Total Steps Taken in One Day (with imputation)" ) +
+#    geom_vline(
+#        aes(
+#            xintercept = steps.mean.by.date.fixed,
+#            color = "Mean"
+#        ),
+#        size = 1,
+#        show.legend = TRUE
+#    ) +
+#    geom_vline(
+#        aes(
+#            xintercept = steps.median.by.date.fixed,
+#            color = "Median"
+#        ),
+#        size = 1,
+#        show.legend = TRUE
+#    ) +
+#    scale_color_manual(
+#        name = "",
+#        values = c( Mean = "red", Median = "green" )
+#    );
+#               
+#
+#print( gg.hist.steps.fixed );
+#
+#```
+#
+#Our new mean and median are:
+#
+#```{r steps_mean_median_fixed, results = 'hold'}
+#
+#cat( "The mean fixed total steps per day is", steps.mean.by.date.fixed, "\n" );
+#cat(
+#    "The median fixed total steps per day is",
+#    steps.median.by.date.fixed,
+#    "\n"
+#);
+#```
+#
+#To remind ourselves of the original values:
+#```{r steps_mean_median_reminder, results = 'hold'}
+#
+#cat( "The mean total steps per day is", steps.mean.by.date, "\n" );
+#cat( "The median total steps per day is", steps.median.by.date, "\n" );
+#```
+#
+#So, imputation using the median by interval changes the mean total daily steps
+#so that it is slightly higher, by about 200 steps, and does not change the
+#median number of steps per day.
+#
+### Are there differences in activity patterns between weekdays and weekends?
+#
+#We can determine this by creating a new factor for `steps.table.fixed`. 
+#
+#```{r factor_steps_fixed_time_series}
+#steps.table.fixed[ ,
+#    daytype :=
+#        ifelse(
+#            weekdays(date) %in% c("Saturday","Sunday"),
+#            "Weekend",
+#            "Weekday"
+#        )
+#];
+#steps.table.fixed[ , daytype := factor(daytype) ];
+#
+#str(steps.table.fixed);
+#print(steps.table.fixed);
+#
+#steps.by.interval.daytype =
+#    steps.table.fixed[ ,
+#        list(mean.steps = mean(steps)),
+#        by = "interval,daytype"
+#];
+#
+#head( steps.by.interval.daytype );
+#
+#summary( steps.by.interval.daytype$mean.steps );
+#
+#library( ggplot2 );
+#
+#gg.mean.steps.fixed =
+#    ggplot( steps.by.interval.daytype, aes( interval, mean.steps ) ) +
+#    geom_line( aes( color = daytype), show.legend = FALSE ) +
+#    facet_grid( daytype ~ . ) +
+#    labs( x = "Interval", y = "Number of Steps" ) +
+#    labs( title = "Average Daily Activity Pattern" );
+#
+#print( gg.mean.steps.fixed );
+#
+#```
+#
