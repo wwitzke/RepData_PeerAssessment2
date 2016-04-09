@@ -7,8 +7,12 @@ output:
 ---
 
 ## Synopsis
-
-**TODO**
+In this exploratory analysis, NOAA weather event data was processed and
+examined to determine which weather events were most likely to have the largest
+economic and health impact. Analysis focused on fatalities, injuries, and crop
+and property damage data obtained after 1996. It was determined that
+hurricanes, tsunamis, heat, and storm surge were the events with the highest
+impact.
 
 ## Preliminaries
 
@@ -22,7 +26,7 @@ tidydata.dir = "data";
 rawfile = file.path( rawdata.dir, "RawData" );
 tidyfile = file.path( tidydata.dir, "TidyData.rds" );
 library(data.table);
-
+library(stringr);
 ```
 
 #### System Information
@@ -116,6 +120,7 @@ if ( file.exists( tidyfile ) )
 {
     message( "Reading saved tidy data set." );
     weather.table = readRDS( tidyfile );
+    str( weather.table );
     dirtydata = FALSE;
 }
 
@@ -155,8 +160,8 @@ Note that reading the decompressed data will generate warnings. This appears to
 be due to certain columns containing multiline values. `fread` is capable of
 handling these multiline values, but the mechanism it uses for estimating the
 number of observations in the file does not appear to take these multiline
-values into account, resulting in an inflated estimate that does not match the
-actual number of lines read.
+values into account. This results in an inflated estimate that does not match
+the actual number of lines read.
 
 ```{r read_decompressed_weather_table, eval = dirtydata}
 weather.table =
@@ -269,293 +274,890 @@ str(weather.table);
 ```
 
 We would also like to turn the event type variable into a factor.
-Unfortunately, there are many problems with this variable. As an example, there
+Unfortunately, there are many problems with this variable. For instance, there
 are over 900 different values in this column, but the data documentation only
-has 48 possible values for the even type. 
+specifies 48 possible valid values for the even type. 
 
 ```{r check_evtype, eval = dirtydata}
-levels( factor( weather.table$evtype ) );
+length( levels( factor( weather.table$evtype ) ) );
 ```
 
-Note that valid values are:
+There is some ambiguity in the documentation. "Hurricane/Typhoon" is also
+referenced as "Hurricane (Typhoon)", and "Marine Tstm Wind" is also referenced
+as "Marine Thunderstorm Wind". In addition, for all "Hail", "Wind" and
+"Tornado" events, the data documentation specifies that additional
+parenthetical values be included in the event type specifying details about
+those events. It is interesting to note that the rules regarding those
+parenthetical values are not followed for any observation in the NOAA data set.
 
-|                         |                     |                   |
-|-------------------------|---------------------|-------------------|
-| Astronomical Low Tide   | Avalanche           | Blizzard          |
-| Coastal Flood           | Cold/Wind Chill     | Debris Flow       |
-| Dense Fog               | Dense Smoke         | Drought           |
-| Dust Devil              | Dust Storm          | Excessive Heat    |
-| Extreme Cold/Wind Chill | Flash Flood         | Flood             |
-| Frost/Freeze            | Funnel Cloud        | Freezing Fog      |
-| Hail                    | Heat                | Heavy Rain        |
-| Heavy Snow              | High Surf           | High Wind         |
-| Hurricane (Typhoon)     | Ice Storm           | Lake-Effect Snow  |
-| Lakeshore Flood         | Lightning           | Marine Hail       |
-| Marine High Wind        | Marine Strong Wind  | Marine Tstm Wind  |
-| Rip Current             | Seiche              | Sleet             |
-| Storm Surge/Tide        | Strong Wind         | Thunderstorm Wind |
-| Tornado                 | Tropical Depression | Tropical Storm    |
-| Tsunami                 | Volcanic Ash        | Waterspout        |
-| Wildfire                | Winter Storm        | Winter Weather    |
+Before we do any more intensive cleanup, we should remove observations that
+contain no data, for example any row with with an event type containing the
+word "summary", which aggregates other discrete event types, or "rogue wave",
+which is an event that does not have a type and which, presumably, this
+database does not officially track. We also change the case of each event type
+to facilitate future processing here as well.
+
+```{r remmove_invalid_evtypes, eval = dirtydata}
+weather.table[ , evtype := tolower( evtype ) ];
+
+#   Summaries appear to be completely impossible to use.
+weather.table = weather.table[ !str_detect( evtype, "summary" ), ];
+
+#   This one has no matching evtype code, even after examining the description
+#   of the observation to which it applies.
+weather.table = weather.table[ !str_detect( evtype, "marine accident" ), ];
+
+#   This one had reported large hail and strong winds, which alone might cause
+#   me to exclude it due to it being in two categories, but it also had no
+#   apparent fatalities, injuries, property or crop damage. It appears to be a
+#   bad entry.
+weather.table = weather.table[ !str_detect( evtype, "metro storm" ), ];
+
+#   Entries with the word "monthly" in them are summaries, and cannot be
+#   considered.
+weather.table = weather.table[ !str_detect( evtype, "monthly" ), ];
+
+#   Yet another summary entry that cannot be considered. Also, why record a
+#   lack of snow as an event?
+weather.table = weather.table[ !str_detect( evtype, "lack of snow" ), ];
+
+#   Why is this next one even in the database?
+weather.table = weather.table[ !str_detect( evtype, "no severe weather" ), ];
+
+#   What? Why?!?
+weather.table = weather.table[ evtype != "none", ];
+
+#   I can't even . . . >.<
+weather.table = weather.table[ !str_detect( evtype, "northern lights" ), ];
+
+#   The following "record" entries do not appear to match any valid event type.
+#   There may be a few that do, but the problem is that they might be
+#   duplicated by valid events, and there are too many to check each one
+#   individually in a reasonable amount of time. All "record" events have to
+#   go.
+weather.table = weather.table[ !str_detect( evtype, "record" ), ];
+
+#   These appear to be reporting the chance of wildfires, or wildfires that are
+#   already recorded by other observations.
+weather.table = weather.table[ !str_detect( evtype, "red flag" ), ];
+
+#   These have no matching valid event type.
+weather.table = weather.table[ !str_detect( evtype, "rogue wave" ), ];
+weather.table = weather.table[ !str_detect( evtype, "heavy seas" ), ];
+weather.table = weather.table[ !str_detect( evtype, "heavy swells" ), ];
+weather.table = weather.table[ !str_detect( evtype, "high\\s*swells" ), ];
+weather.table = weather.table[ !str_detect( evtype, "high seas" ), ];
+weather.table = weather.table[ !str_detect( evtype, "rough seas" ), ];
+weather.table = weather.table[ !str_detect( evtype, "severe turbulence" ), ];
+
+#   The word "unseasonable" is not specific enough to denote an actual event
+#   type, and there are too many such entries to check each one individually.
+weather.table = weather.table[ !str_detect( evtype, "unseason" ), ];
+
+#   Similarly, "unusual" elements are not specific enough, either.
+weather.table = weather.table[ !str_detect( evtype, "unusual" ), ];
+
+#   As appears to be the case with many of the adverbs and adjectives appearing
+#   in the event type column, "abnormal" observations appear to contain summary
+#   information that is not usable.
+weather.table = weather.table[ !str_detect( evtype, "abnormal" ), ];
+
+#   The various "accumulated" entries not only are not properly coded as event
+#   types, but they report damage in their remarks without having any damage
+#   specified in the proper variables.
+weather.table = weather.table[ !str_detect( evtype, "accumulate" ), ];
+
+#   No really information in the entry with this one.
+weather.table = weather.table[ !str_detect( evtype, "driest" ), ];
+
+#   The word pattern seems to indicate summary information as well.
+weather.table = weather.table[ !str_detect( evtype, "pattern" ), ];
+
+#   Same with "spell".
+weather.table = weather.table[ !str_detect( evtype, "spell" ), ];
+
+#   There are a few observations with the "other" even type. These end up being
+#   mixtures of dust devils, winds, and winter weather. It may be possible to
+#   recode these all individually, but it is not worth the time investment to
+#   do it for this exploratory analysis, so they have to go.
+weather.table = weather.table[ evtype !=  "other", ];
+
+#   This next one was coded incorrectly and no detail in the remarks to help.
+weather.table = weather.table[ !str_detect( evtype, "beach erosin" ), ];
+
+#   This next invalid event type descriptor denotes summaries, like most others
+#   do.
+weather.table = weather.table[ !str_detect( evtype, "normal" ), ];
+
+#   It is unfortunately impossible to determine if "dry" events are droughts
+#   from the information available. The website that is supposed to maintain
+#   those definitions is no longer available, and there isn't enough
+#   information in the remarks to make a determination anyway (probably).
+weather.table = weather.table[ ! (evtype %in% c( "dry", 
+                                                 "dry conditions",
+                                                 "dry weather",
+                                                 "dryness",
+                                                 "excessively dry",
+                                                 "very dry"
+                                               )
+                                 ),
+                             ];
+
+#   "Early rain" cannot be matched to a valid event type.
+weather.table = weather.table[ evtype != "early rain", ];
+
+#   "Excessive precipitation" also cannot be matched to a valid event type.
+weather.table = weather.table[ evtype != "excessive precipitation", ];
+
+#   "extremely wet" is a summary observation of no value to us.
+weather.table = weather.table[ evtype != "extremely wet", ];
+
+#   "flood watch" appears to be a summary event.
+weather.table = weather.table[ !str_detect( evtype, "flood watch" ), ];
+
+#   No idea what this is supposed to be.
+weather.table = weather.table[ !( evtype %in% c( "high",
+                                                 "large wall cloud",
+                                                 "wall cloud",
+                                                 "rotating wall cloud"
+                                               )
+                                ),
+                             ];
 
 
+#   More summary entries.
+weather.table = weather.table[ !( evtype %in% c( "wet month", "wet year" ) ) ];
 
-A majority of the discrepancy is caused by typos and similar transcription
-errors.
+#   Get rid of the obvious one, finally.
+weather.table = weather.table[ evtype != "?" ];
+```
 
+We are not interested in the size of the hail or the strength of tornados and
+winds, and no digits appear in any of the valid entries for `evtype` in the
+data set, so we will first remove all digits and parentheticals, We also are
+not interested in most dashes, so we will remove them, and we can change all
+instances of blackslashes or double-backslashes to forward slashes.
 
-    if ( !dir.exists( tidydata.dir ) )
-    {
-        dir.create( tidydata.dir, recursive = TRUE );
-    }
-    saveRDS( retval, retfile );
+```{r clean_evtype, eval = dirtydata}
+#   I really wish we had perl regular expression syntax here. Would simplify
+#   the horrible \\\\\\\\ (which matches \\ in the actual string) and \\\\.
+weather.table[ , evtype := str_replace_all( evtype, "\\\\\\\\|\\\\", "/" ) ];
+weather.table[ ,
+    evtype := str_replace_all(
+        evtype,
+        "\\(|[0-9.]+|\\)|/$|^/",
+        ""
+    )
+];
+weather.table[ , evtype := str_replace_all( evtype, "-|\\s+", " " ) ];
+```
 
+There are a number of simple text replacements that can be performed that
+should be safe. These arise from typos, inconsistent text formatting, and
+left-over characters from previous processing steps. Correcting these should
+have no negative impact on our results, and will provide additional
+observations that might otherwise be lost.
 
+```{r clean_evtype_1, eval = dirtydata}
+weather.table[ , evtype := str_replace_all( evtype, "wildfires", "wildfire" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "wild fires", "wildfire" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "water spout", "waterspout" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "waterspouts", "waterspout" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "wayterspout", "waterspout" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "ashfall", "ash" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "ash plume", "ash" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "tornadoes", "tornado" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "tornadoe debris", "tornado" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "tornados", "tornado" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "torndao", "tornado" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thuderstorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thundeerstorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thunderestorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thunderstorms", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thundertorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thundertsorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thundestorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thunerstorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "tunderstorm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "thunderstormwind", "thunderstorm wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "currents", "current" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "snowfall", "snow" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "lighting", "lightning" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "ligntning", "lightning" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "rainfall", "rain" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "rains", "rain" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "hvy", "heavy" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "torrential", "heavy" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "showers*", "rain" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "cstl", "coastal" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "devel", "devil" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "flashflood", "flash flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "flooding", "flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "floooding", "flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "floodin", "flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "flooodin", "flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "floods", "flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "clouds", "cloud" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "wnd", "wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "wins", "wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "w inds", "wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "w wind", " wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "winds", "wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "avalance", "avalanche" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "tstm", "thunderstorm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "coastalflood", "coastal flood" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "duststorm", "dust storm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "icestorm", "ice storm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "funnel cloudss", "funnel clouds" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "hail\\s*storms*", "hail" ) ];
+weather.table[ , evtype := str_replace_all( evtype, " g$", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, " f$", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, " le cen$", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, " mph$", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "small hail", "hail" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "^typhoon$", "hurricane/typhoon" ) ];
+```
 
+These next replacements are, perhaps, slightly more dangerous, but should be
+relatively safe. These transformations involve removing or changing irrelevant
+information in the event type string to help match valid event type values.
 
-#```{r make_tidy_data}
-#
-#
-#
-#```
+```{r clean_evtype_2, eval = dirtydata}
+weather.table[ , evtype := str_replace_all( evtype, "thunderstormw", "thunderstorm wind" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "^hurricane.*", "hurricane/typhoon" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "^tropical storm.*", "tropical storm" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "locally|local", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "major|minor", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "/*\\s*trees", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "late season ", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "rural", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "agricultural ", "" ) ];
+weather.table[ , evtype := str_replace_all( evtype, "near record", "heavy" ) ];
+```
 
-### What is mean total number of steps taken per day?
-#
-#To calculate the total steps taken per day, we can group our `steps.table` by
-#date. We can also take a look at the distribution of the total steps by
-#generating a histogram.
-#
-#```{r steps_histogram}
-#steps.by.date =
-#    steps.table[, list(total.steps = sum(steps, na.rm = TRUE)), by = date];
-#
-#head( steps.by.date );
-#
-#summary( steps.by.date$total.steps, na.rm = TRUE );
-#
-#steps.mean.by.date = steps.by.date[ , mean(total.steps, na.rm = TRUE) ];
-#steps.median.by.date = steps.by.date[ , median(total.steps, na.rm = TRUE) ];
-#
-#library( ggplot2 );
-#
-#gg.hist.steps =
-#    ggplot( steps.by.date, aes( total.steps ), show.legend = TRUE ) +
-#    geom_histogram( bins = 20, col="black", aes( fill=..count.. ) ) +
-#    labs( x = "Total Steps per Day", y = "Count" ) +
-#    labs( title = "Occurances of Total Steps Taken in One Day" ) +
-#    geom_vline(
-#        aes(
-#            xintercept = steps.mean.by.date,
-#            color = "Mean"
-#        ),
-#        size = 1,
-#        show.legend = TRUE
-#    ) +
-#    geom_vline(
-#        aes(
-#            xintercept = steps.median.by.date,
-#            color = "Median"
-#        ),
-#        size = 1,
-#        show.legend = TRUE
-#    ) +
-#    scale_color_manual(
-#        name = "",
-#        values = c( Mean = "red", Median = "green" )
-#    );
-#               
-#
-#print( gg.hist.steps );
-#
-#```
-#
-#The mean and median total steps per day are:
-#
-#```{r steps_mean_median, results = 'hold'}
-#cat( "The mean total steps per day is", steps.mean.by.date, "\n" );
-#cat( "The median total steps per day is", steps.median.by.date, "\n" );
-#```
-#
-### What is the average daily activity pattern?
-#
-#To determine average daily activity patterns, we can simply group by interval.
-#
-#```{r steps_time_series}
-#steps.by.interval =
-#    steps.table[, list(mean.steps = mean(steps, na.rm = TRUE)), by = interval];
-#
-#head( steps.by.interval );
-#
-#summary( steps.by.interval$mean.steps, na.rm = TRUE );
-#
-#steps.max.interval =
-#    steps.by.interval[ mean.steps == max(mean.steps, na.rm = TRUE), interval ];
-#
-#library( ggplot2 );
-#
-#gg.mean.steps =
-#    ggplot( steps.by.interval, aes( interval, mean.steps ) ) +
-#    geom_line( color = "cyan3" ) +
-#    labs( x = "Interval", y = "Number of Steps" ) +
-#    labs( title = "Average Daily Activity Pattern" );
-#
-#print( gg.mean.steps );
-#
-#cat(
-#    "The maximum average steps occurs during the interval at minute",
-#    steps.max.interval,
-#    "\n"
-#);
-#
-#```
-#
-### Imputing missing values
-#
-#There may be some bias introduced into the dataset due to missing values. So,
-#how many missing values do we have?
-#
-#```{r missing_values, results = 'hold'}
-#cat( "Missing steps", sum(is.na( steps.table$steps )), "\n");
-#cat( "Missing dates", sum(is.na( steps.table$date )), "\n");
-#cat( "Missing intervals", sum(is.na( steps.table$interval )), "\n");
-#
-#cat(
-#    "Proportion of missing steps is",
-#    sum( is.na( steps.table$steps ) )/nrow( steps.table ),
-#    "\n"
-#);
-#
-#```
-#
-#So, only steps are missing from the dataset, which is good, but over 13% of
-#entries for steps are `NA`, which may be very bad. We can estimate what these
-#missing values might be by replacing them with the median steps for that
-#interval. Apparently both mean and median are not good choices for imputation,
-#but in this assignment we are allowed to use simple imputed values. I choose
-#median because this dataset appears to have some skew in it.
-#
-#```{r fix_missing_steps}
-#
-#steps.table.fixed = data.table::copy(steps.table);
-#steps.table.fixed[ ,
-#    steps := ifelse(is.na(steps), median(steps, na.rm = TRUE), steps),
-#    by = interval
-#];
-#
-#str(steps.table.fixed);
-#
-#summary(steps.table$steps);
-#summary(steps.table.fixed$steps);
-#
-#```
-#
-#Now, we create a histogram similar to the one created earlier.
-#
-#```{r fixed_steps_histogram}
-#steps.by.date.fixed =
-#    steps.table.fixed[ , list(total.steps = sum(steps)), by = date ];
-#
-#head( steps.by.date.fixed );
-#
-#summary( steps.by.date.fixed$total.steps );
-#
-#steps.mean.by.date.fixed = steps.by.date.fixed[ , mean(total.steps) ];
-#steps.median.by.date.fixed = steps.by.date.fixed[ , median(total.steps) ];
-#
-#library( ggplot2 );
-#
-#gg.hist.steps.fixed =
-#    ggplot( steps.by.date.fixed, aes( total.steps ), show.legend = TRUE ) +
-#    geom_histogram( bins = 20, col="black", aes( fill=..count.. ) ) +
-#    labs( x = "Total Steps per Day", y = "Count" ) +
-#    labs( title = "Occurances of Total Steps Taken in One Day (with imputation)" ) +
-#    geom_vline(
-#        aes(
-#            xintercept = steps.mean.by.date.fixed,
-#            color = "Mean"
-#        ),
-#        size = 1,
-#        show.legend = TRUE
-#    ) +
-#    geom_vline(
-#        aes(
-#            xintercept = steps.median.by.date.fixed,
-#            color = "Median"
-#        ),
-#        size = 1,
-#        show.legend = TRUE
-#    ) +
-#    scale_color_manual(
-#        name = "",
-#        values = c( Mean = "red", Median = "green" )
-#    );
-#               
-#
-#print( gg.hist.steps.fixed );
-#
-#```
-#
-#Our new mean and median are:
-#
-#```{r steps_mean_median_fixed, results = 'hold'}
-#
-#cat( "The mean fixed total steps per day is", steps.mean.by.date.fixed, "\n" );
-#cat(
-#    "The median fixed total steps per day is",
-#    steps.median.by.date.fixed,
-#    "\n"
-#);
-#```
-#
-#To remind ourselves of the original values:
-#```{r steps_mean_median_reminder, results = 'hold'}
-#
-#cat( "The mean total steps per day is", steps.mean.by.date, "\n" );
-#cat( "The median total steps per day is", steps.median.by.date, "\n" );
-#```
-#
-#So, imputation using the median by interval changes the mean total daily steps
-#so that it is slightly higher, by about 200 steps, and does not change the
-#median number of steps per day.
-#
-### Are there differences in activity patterns between weekdays and weekends?
-#
-#We can determine this by creating a new factor for `steps.table.fixed`. 
-#
-#```{r factor_steps_fixed_time_series}
-#steps.table.fixed[ ,
-#    daytype :=
-#        ifelse(
-#            weekdays(date) %in% c("Saturday","Sunday"),
-#            "Weekend",
-#            "Weekday"
-#        )
-#];
-#steps.table.fixed[ , daytype := factor(daytype) ];
-#
-#str(steps.table.fixed);
-#print(steps.table.fixed);
-#
-#steps.by.interval.daytype =
-#    steps.table.fixed[ ,
-#        list(mean.steps = mean(steps)),
-#        by = "interval,daytype"
-#];
-#
-#head( steps.by.interval.daytype );
-#
-#summary( steps.by.interval.daytype$mean.steps );
-#
-#library( ggplot2 );
-#
-#gg.mean.steps.fixed =
-#    ggplot( steps.by.interval.daytype, aes( interval, mean.steps ) ) +
-#    geom_line( aes( color = daytype), show.legend = FALSE ) +
-#    facet_grid( daytype ~ . ) +
-#    labs( x = "Interval", y = "Number of Steps" ) +
-#    labs( title = "Average Daily Activity Pattern" );
-#
-#print( gg.mean.steps.fixed );
-#
-#```
-#
+Next, we do some safe cleanup to remove extra spaces, in preparation for the
+massive categorization to come.
+
+```{r clean_evtype_4, eval = dirtydata}
+
+weather.table[ , evtype := str_replace_all( evtype, "\\s+", " " ) ];
+weather.table[ , evtype := str_replace_all( evtype, "^\\s+|\\s+$", "" ) ];
+```
+
+Finally, this next series uses the definitions provided in the data
+documentation to attempt to classify various remaining errant `evtype` values
+as a valid values.  Many of the event type values can be reclassified based on
+those guidlines, but occasionally interpretation beyond those guidelines is
+required. Any `evtype` values that could not possibly be classified have
+already been removed from the dataset. The categorization here is not perfect,
+but is reasonable for an exploratory study.
+
+```{r clean_evtype_3, eval = dirtydata}
+weather.table[
+    evtype %in% c( "blow out tide", "blow out tides" ),
+    evtype := "astronomical low tide"
+];
+weather.table[
+    evtype == "heavy snow/blizzard/avalanche",
+    evtype := "avalanche"
+];
+weather.table[
+    evtype %in% c(
+        "blizzard and extreme wind chil", "blizzard and heavy snow",
+        "blizzard weather", "blizzard/freezing rain", "blizzard/heavy snow",
+        "blizzard/high wind", "blizzard/winter storm", "ground blizzard",
+        "heavy snow/blizzard", "high wind/ blizzard", "high wind/blizzard",
+        "high wind/blizzard/freezing ra", "high wind/wind chill/blizzard",
+        "ice storm/blizzard"
+    ),
+    evtype := "blizzard"
+];
+weather.table[
+    evtype %in% c(
+        "beach erosion/coastal flood", "beach flood", "coastal flood/erosion",
+        "coastal/tidal flood", "erosion/coastal flood",
+        "heavy surf coastal flood", "high wind/coastal flood"
+    ),
+    evtype := "coastal flood"
+];
+weather.table[
+    evtype %in% c(
+        "cold", "cold temperature", "cold temperatures", "cold wave",
+        "cold weather", "cold wind chill temperatures", "cold/wind",
+        "excessive cold", "extended cold", "fog and cold temperatures",
+        "high wind and wind chill", "high wind/cold",
+        "high wind/lo wind chill", "high wind/wind chill",
+        "hyperthermia/exposure", "hypothermia", "hypothermia/exposure",
+        "lo wind chill", "low temperature", "prolong cold", "wind chill",
+        "wind chill/high wind"
+    ),
+    evtype := "cold/wind chill"
+];
+weather.table[
+    evtype %in% c(
+        "landslide", "landslide/urban flood", "landslides", "landslump",
+        "mud slide", "mud slides", "mud slides urban flood", "mud/rock slide",
+        "mudslide", "mudslide/landslide", "mudslides", "rock slide",
+        "urban flood landslide"
+    ),
+    evtype := "debris flow"
+];
+weather.table[
+    evtype %in% c( "fog", "patchy dense fog" ),
+    evtype := "dense fog"
+];
+weather.table[
+    evtype == "smoke",
+    evtype := "dense smoke"
+];
+weather.table[
+    evtype %in% c(
+        "drought/excessive heat", "excessive", "excessive heat/drought",
+        "heat drought", "heat wave drought", "heat/drought", "snow drought"
+    ),
+    evtype := "drought"
+];
+weather.table[
+    evtype %in% c(
+        "blowing dust", "dust storm/high wind", "high wind dust storm",
+        "saharan dust"
+    ),
+    evtype := "dust storm"
+];
+weather.table[
+    evtype == "extreme heat",
+    evtype := "excessive heat"
+];
+weather.table[
+    evtype %in% c(
+        "bitter wind chill", "bitter wind chill temperatures", "extreme cold",
+        "extreme wind chill", "extreme wind chills", "extreme windchill",
+        "extreme windchill temperatures", "severe cold"
+    ),
+    evtype := "extreme cold/wind chill"
+];
+weather.table[
+    evtype %in% c(
+        "flash flood from ice jams", "flash flood heavy rain",
+        "flash flood landslides", "flash flood/ flood", "flash flood/ street",
+        "flash flood/flood", "flash flood/heavy rain", "flash flood/landslide",
+        "flash flood/thunderstorm wi", "flood flash", "flood flood/flash",
+        "flood/flash", "flood/flash flood", "flood/flash/flood",
+        "rapidly rising water", "thunderstorm wind/flash flood"
+    ),
+    evtype := "flash flood"
+];
+weather.table[
+    evtype %in% c(
+        "flood & heavy rain", "flood/rain/wind", "flood/river flood",
+        "flood/strong wind", "hail flood", "heavy rain and flood",
+        "heavy rain/flood", "heavy rain/mudslides/flood",
+        "heavy snow/high wind & flood", "high wind/flood", "ice jam flood",
+        "river and stream flood", "river flood", "snowmelt flood",
+        "thunderstorm wind/ flood", "thunderstorm wind/flood"
+    ),
+    evtype := "flood"
+];
+weather.table[
+    evtype == "ice fog",
+    evtype := "freezing fog"
+];
+weather.table[
+    evtype %in% c(
+        "cold and frost", "damaging freeze", "early freeze", "early frost",
+        "first frost", "freeze", "frost", "hard freeze", "late freeze"
+    ),
+    evtype := "frost/freeze"
+];
+weather.table[
+    evtype %in% c(
+        "cold air funnel", "cold air funnels", "funnel", "funnels",
+        "thunderstorm wind funnel clou", "thunderstorm wind/funnel clou",
+        "wall cloud/funnel cloud"
+    ),
+    evtype := "funnel cloud"
+];
+weather.table[
+    evtype %in% c(
+        "deep hail", "funnel cloud/hail", "gusty wind/hail", "hail aloft",
+        "hail damage", "hail/wind", "non severe hail", "thunderstorm hail",
+        "thunderstorm wind hail", "thunderstorm wind/ hail",
+        "thunderstorm wind/hail", "thunderstorm windhail", "wind/hail"
+    ),
+    evtype := "hail"
+];
+weather.table[
+    evtype %in% c(
+        "dry hot weather", "heat wave", "heat waves", "hot and dry",
+        "hot weather", "prolong warmth", "very warm", "warm dry conditions",
+        "warm weather"
+    ),
+    evtype := "heat"
+];
+weather.table[
+    evtype %in% c(
+        "coastal storm", "coastalstorm", "cold and wet conditions",
+        "cool and wet", "dam break", "dam failure", "drowning",
+        "excessive rain", "excessive wetness", "gusty wind/heavy rain",
+        "heavy precipatation", "heavy precipitation", "heavy rain and wind",
+        "heavy rain effects", "heavy rain; urban flood wind;",
+        "heavy rain/lightning", "heavy rain/severe weather",
+        "heavy rain/small stream urban", "heavy rain/urban flood",
+        "heavy rain/wind", "high wind heavy rain", "high wind/heavy rain",
+        "highway flood", "lightning and heavy rain", "lightning/heavy rain",
+        "prolonged rain", "rain", "rain and wind", "rain damage", "rain heavy",
+        "rain/wind", "raintorm", "small stream", "small stream and",
+        "small stream and urban flood", "small stream flood",
+        "small stream urban flood", "small stream/urban flood",
+        "sml stream fld", "stream flood", "street flood",
+        "thunderstorm heavy rain", "thunderstorm wind heavy rain",
+        "thunderstorm wind small strea", "thunderstorm wind urban flood",
+        "thunderstorm wind/heavy rain", "urban and small",
+        "urban and small stream", "urban and small stream flood",
+        "urban flood", "urban small", "urban small stream flood",
+        "urban/small", "urban/small flood", "urban/small stream",
+        "urban/small stream flood", "urban/small strm fldg",
+        "urban/sml stream fld", "urban/sml stream fldg", "urban/street flood",
+        "wet weather"
+    ),
+    evtype := "heavy rain"
+];
+weather.table[
+    evtype %in% c(
+        "excessive snow", "falling snow/ice", "heavy snow and",
+        "heavy snow and high wind", "heavy snow and strong wind",
+        "heavy snow squalls", "heavy snow/high", "heavy snow/high wind",
+        "heavy snow/squalls", "heavy snow/wind", "heavy snowpack",
+        "heavy wet snow", "high wind and heavy snow", "high wind/heavy snow",
+        "snow accumulation", "snow and heavy snow", "snow/heavy snow"
+    ),
+    evtype := "heavy snow"
+];
+weather.table[
+    evtype %in% c(
+        "astronomical high tide", "beach erosion", "hazardous surf",
+        "heavy rain/high surf", "heavy surf", "heavy surf and wind",
+        "heavy surf/high surf", "high surf advisories", "high surf advisory",
+        "high tides", "high water", "high waves", "high wind and high tides",
+        "rip current heavy surf", "rip current/heavy surf", "rough surf",
+        "wind and wave"
+    ),
+    evtype := "high surf"
+];
+weather.table[
+    evtype %in% c(
+        "gradient wind", "high wind damage", "high wind/seas",
+        "non thunderstorm wind", "storm force wind"
+    ),
+    evtype := "high wind"
+];
+weather.table[
+    evtype == "remnants of floyd",
+    evtype := "hurricane/typhoon"
+];
+weather.table[
+    evtype %in% c(
+        "glaze/ice storm", "heavy snow/ice storm", "ice storm and snow",
+        "ice storm/flash flood", "snow and ice storm", "snow/ice storm"
+    ),
+    evtype := "ice storm"
+];
+weather.table[
+    evtype %in% c(
+        "heavy lake snow", "lake effect snow", "thundersnow",
+        "thundersnow rain"
+    ),
+    evtype := "lake-effect snow"
+];
+weather.table[
+    evtype == "lake flood",
+    evtype := "lakeshore flood"
+];
+weather.table[
+    evtype %in% c(
+        "lightning damage", "lightning fire", "lightning injury",
+        "lightning wauseon"
+    ),
+    evtype := "lightning"
+];
+weather.table[
+    evtype == "high wind and seas",
+    evtype := "marine high wind"
+];
+weather.table[
+    evtype == "gusty lake wind",
+    evtype := "marine strong wind"
+];
+weather.table[
+    evtype == "marine mishap",
+    evtype := "marine strong wind"
+];
+weather.table[
+    evtype == "sleet storm",
+    evtype := "sleet"
+];
+weather.table[
+    evtype %in% c(
+        "coastal erosion", "coastal surge", "storm surge", "tidal flood"
+    ),
+    evtype := "storm surge/tide"
+];
+weather.table[
+    evtype %in% c(
+        "gusty wind", "gusty wind/rain", "non severe wind damage", "southeast",
+        "strong wind gust", "wake lo wind", "wind", "wind advisory",
+        "wind damage", "wind gusts", "wind storm"
+    ),
+    evtype := "strong wind"
+];
+weather.table[
+    evtype %in% c(
+        "apache county", "downburst", "downburst wind", "dry microburst",
+        "dry microburst wind", "dry mircoburst wind", "gustnado",
+        "gustnado and", "gusty thunderstorm wind", "heatburst",
+        "lightning and thunderstorm win", "lightning and wind",
+        "lightning thunderstorm wind", "lightning thunderstorm winds",
+        "microburst", "microburst wind", "severe thunderstorm",
+        "severe thunderstorm wind", "thunderstorm", "thunderstorm damage",
+        "thunderstorm damage to", "thunderstorm wind and",
+        "thunderstorm wind and lightning", "thunderstorm wind damage",
+        "thunderstorm wind lightning", "thunderstorm wind/ tree",
+        "thunderstorm wind/awning", "thunderstorm wind/lightning",
+        "thunderstorm winds", "thunderstrom wind", "wet micoburst",
+        "wet microburst"
+    ),
+    evtype := "thunderstorm wind"
+];
+weather.table[
+    evtype %in% c(
+        "cold air tornado", "landspout", "tornado debris",
+        "tornado, thunderstorm wind, hail", "whirlwind"
+    ),
+    evtype := "tornado"
+];
+weather.table[
+    evtype %in% c( "vog", "volcanic eruption" ),
+    evtype := "volcanic ash"
+];
+weather.table[
+    evtype %in% c(
+        "dust devil waterspout", "tornado/waterspout",
+        "waterspout funnel cloud", "waterspout tornado", "waterspout/ tornado",
+        "waterspout/tornado"
+    ),
+    evtype := "waterspout"
+];
+weather.table[
+    evtype %in% c(
+        "brush fire", "brush fires", "forest fires", "grass fires",
+        "wild/forest fire", "wild/forest fires"
+    ),
+    evtype := "wildfire"
+];
+weather.table[
+    evtype %in% c(
+        "freezing rain and sleet", "freezing rain and snow",
+        "freezing rain sleet and", "freezing rain sleet and light",
+        "freezing rain/sleet", "freezing rain/snow", "hail/icy roads",
+        "heavy mix", "heavy snow & ice", "heavy snow and ice",
+        "heavy snow and ice storm", "heavy snow andblowing snow",
+        "heavy snow freezing rain", "heavy snow/blowing snow",
+        "heavy snow/freezing rain", "heavy snow/high wind/freezing",
+        "heavy snow/ice", "heavy snow/sleet", "heavy snow/winter storm",
+        "ice and snow", "ice floes", "ice/snow", "light snow and sleet",
+        "light snow/freezing precip", "mixed precip", "mixed precipitation",
+        "sleet & freezing rain", "sleet/freezing rain", "sleet/ice storm",
+        "sleet/rain/snow", "sleet/snow", "snow and ice", "snow and sleet",
+        "snow freezing rain", "snow sleet", "snow/ ice", "snow/freezing rain",
+        "snow/ice", "snow/rain/sleet", "snow/sleet",
+        "snow/sleet/freezing rain", "snow/sleet/rain", "winter mix",
+        "winter storm high wind", "winter storm/high wind", "winter storms",
+        "winter weather mix", "winter weather/mix", "wintery mix", "wintry mix"
+    ),
+    evtype := "winter storm"
+];
+weather.table[
+    evtype %in% c(
+        "black ice", "blowing snow", "blowing snow & extreme wind ch",
+        "blowing snow extreme wind chi", "blowing snow/extreme wind chil",
+        "cold and snow", "drifting snow", "early snow",
+        "extreme wind chill/blowing sno", "first snow", "freezing drizzle",
+        "freezing drizzle and freezing", "freezing rain", "freezing spray",
+        "glaze", "glaze ice", "heavy rain/snow", "heavy snow rain",
+        "high wind/snow", "ice", "ice jam", "ice on road", "ice pellets",
+        "ice roads", "ice/strong wind", "icy roads", "late snow",
+        "light freezing rain", "light snow", "light snow/flurries",
+        "moderate snow", "mountain snows", "patchy ice", "prolong cold/snow",
+        "rain/snow", "seasonal snow", "snow", "snow advisory", "snow and cold",
+        "snow and wind", "snow high wind wind chill", "snow rain",
+        "snow squall", "snow squalls", "snow/ bitter cold",
+        "snow/blowing snow", "snow/cold", "snow/high wind", "snow/rain",
+        "snowstorm", "wet snow"
+    ),
+    evtype := "winter weather"
+];
+
+valid.evtype = c(
+    "Astronomical Low Tide", "Avalanche", "Blizzard",
+    "Coastal Flood", "Cold/Wind Chill", "Debris Flow",
+    "Dense Fog", "Dense Smoke", "Drought",
+    "Dust Devil", "Dust Storm", "Excessive Heat",
+    "Extreme Cold/Wind Chill", "Flash Flood", "Flood",
+    "Frost/Freeze", "Funnel Cloud", "Freezing Fog",
+    "Hail", "Heat", "Heavy Rain",
+    "Heavy Snow", "High Surf", "High Wind",
+    "Hurricane/Typhoon", "Ice Storm", "Lake-Effect Snow",
+    "Lakeshore Flood", "Lightning", "Marine Hail",
+    "Marine High Wind", "Marine Strong Wind", "Marine Thunderstorm Wind",
+    "Rip Current", "Seiche", "Sleet",
+    "Storm Surge/Tide", "Strong Wind", "Thunderstorm Wind",
+    "Tornado", "Tropical Depression", "Tropical Storm",
+    "Tsunami", "Volcanic Ash", "Waterspout",
+    "Wildfire", "Winter Storm", "Winter Weather"
+);
+
+weather.table = weather.table[ evtype %in% tolower(valid.evtype), ];
+weather.table$evtype = factor( weather.table$evtype );
+
+#   This is from the ?tolower help information:
+proper = function(ss)
+{
+    cap =
+        function(st) paste(
+            toupper( substring( st, 1, 1 ) ),
+            tolower( substring( st, 2 ) ),
+            sep = "",
+            collapse = " "
+        );
+
+    sapply(
+        strsplit( ss, split = " " ),
+        cap,
+        USE.NAMES = !is.null( names( ss ) )
+    );
+}
+
+#   Capitalization for nice summarization later.
+levels( weather.table$evtype ) =
+    proper( levels( weather.table$evtype ) );
+
+```
+
+Now we check for `NA` values. Generally, `NA` values will prevent an
+observation from contributing to the analysis. `NA` values in `propdmgexp` and
+`cropdmgexp` are valid only if the accompanying `propdmg` and `cropdmg` are 0.
+We remove any observations that do not conform.
+
+```{r remove_NA, eval = dirtydata}
+weather.table = weather.table[ 
+    !is.na(bgn_date) &
+    !is.na(evtype) &
+    !is.na(fatalities) &
+    !is.na(injuries) &
+    !is.na(propdmg) &
+    !is.na(cropdmg) &
+    !(is.na(propdmgexp) & propdmg != 0) &
+    !(is.na(cropdmgexp) & cropdmg != 0),
+];
+```
+
+Since `propdmg` and `propdmgexp` do not actually represent different variables,
+but rather a single variable spread across two columns, we combine them back
+into a single numerical value of the proper magnitude and store that back in
+`propdmg`, dropping `propdmgexp` from the data set.  We do the same for
+`cropdmg` and `cropdmgexp`. Finally, since we are only interested in overall
+economic impact, we combine `cropdmg` and `propdmg` into a single new variable,
+`totaldmg`, and drop `cropdmg` and `propdmg` from the data set.
+```{r fix_crop_prop_dmg, eval = dirtydata}
+
+weather.table[
+    !is.na(propdmgexp),
+    propdmg :=
+        ifelse(
+            propdmgexp == 'K',
+            propdmg * 1000,
+            ifelse(
+                propdmgexp == 'M',
+                propdmg * 1000000,
+                propdmg * 1000000000
+            )
+        )
+];
+weather.table[ , propdmgexp := NULL ];
+
+weather.table[
+    !is.na(cropdmgexp),
+    cropdmg :=
+        ifelse(
+            cropdmgexp == 'K',
+            cropdmg * 1000,
+            ifelse(
+                cropdmgexp == 'M',
+                cropdmg * 1000000,
+                cropdmg * 1000000000
+            )
+        )
+];
+
+weather.table[ , cropdmgexp := NULL ];
+
+weather.table[ , totaldmg := propdmg + cropdmg ];
+weather.table[ , cropdmg := NULL ];
+weather.table[ , propdmg := NULL ];
+
+str( weather.table );
+
+if ( !dir.exists( tidydata.dir ) )
+{
+    dir.create( tidydata.dir, recursive = TRUE );
+}
+saveRDS( weather.table, tidyfile );
+
+```
+
+## Results
+
+The present impact of weather events on the economy and individual health
+depends largely on the fatilities, injuries, and damage done by those events.
+From the data provided by the NOAA, we can study this information to get an
+idea of which events are most damaging.  However, due to advances in
+technology (such as the advent of early warning systems), changes in culture
+(such as education), changes in the environment (such as global warming), and
+changes in data collection techniques, not all data provided by NOAA will be
+relevant to a measure of the current impact of weather events.
+
+The following figure shows total yearly fatalities, injuries, and property
+damage for each weather event. While specific details about individual weather
+events cannot be determined from this graph, it is clear that there is
+significant variation in the collected data over time.
+
+```{r weather_impact_by_year, fig.height = 10, fig.width = 10}
+library(lubridate);
+library(ggplot2);
+weather.impact.by.year =
+    weather.table[ , year := year(bgn_date) ];
+
+weather.impact.by.year =
+    weather.impact.by.year[ ,
+        list(
+            fatalities = sum(fatalities),
+            injuries = sum(injuries),
+            totaldmg = sum(totaldmg)
+        ),
+        by="year,evtype"
+    ];
+
+weather.impact.by.year =
+    melt(
+         weather.impact.by.year,
+         c( "year", "evtype" ),
+         variable.name = "impact"
+    );
+
+wiby =
+    ggplot( weather.impact.by.year, aes( year, value ) ) +
+    geom_line( aes( col = evtype ) ) +
+    facet_grid( impact ~ ., scales = "free_y" ) +
+    theme( legend.position = "bottom" ) +
+    xlab( "Year" ) +
+    ylab( "" ) +
+    ggtitle( "Summary of Total Weather Impact Over Time" ) +
+    scale_x_continuous(
+        breaks =
+            round(
+                seq(
+                    min(weather.impact.by.year$year),
+                    max(weather.impact.by.year$year),
+                    by = 5 
+                ),
+                0
+            )
+    ) +
+    scale_color_discrete( name = "Event Title" );
+
+print(wiby);
+
+```
+
+The plot shows that data collected earlier than 1993 is, at best, incomplete.
+In addition, the drop in fatalities for the data that does exist prior to 1993
+signals changes in at least one of the elements mentioned earlier. Also, from
+the data processing step, we know there were significant problems with data
+collected prior to 1996.
+
+However, we can focus on data after 1996 to get the following two plots. The
+first shows the average health impact of each weather event per year after
+1996. From this plot, it appears as though tsunamis, hurricanes, and
+heat/excessive heat have the largest impact on health.
+
+```{r weather_health_impact_after_1996, fig.width = 10, fig.height = 6}
+
+weather.impact =
+    weather.table[ , year := year(bgn_date) ];
+
+weather.impact =
+    weather.impact[
+        year >= 1996,
+        list(
+            injuries = mean(injuries),
+            fatalities = mean(fatalities),
+            totaldmg = mean(totaldmg)
+        ),
+        by = "evtype"
+    ];
+
+weather.impact =
+    melt(
+         weather.impact,
+         c( "evtype", "totaldmg" ),
+         variable.name = "health"
+    );
+
+healthplot =
+    ggplot( weather.impact, aes( x = evtype, y = value, fill = health ) ) +
+    geom_bar( stat = "identity", position = position_dodge() ) +
+    theme(
+        axis.text.x = element_text( angle = -60, hjust = 0 )
+    ) +
+    scale_y_continuous( expand = c(0, 0), limits = c(0, 6.8) ) +
+    ggtitle(
+        "Average Health Impact of Weather Effects Per Year (after 1996)"
+    ) +
+    xlab( "Weather Event Type" ) +
+    ylab( "Number of People" ) +
+    scale_fill_discrete( name = "" );
+
+print( healthplot );
+
+```
+
+Similarly, the following figure shows average economic impact per year after
+1996 for each weather event. From this plot, it appears as though hurricanes
+and storm surges have by far the largest economic impact.
+
+```{r weather_economic_impact_after_1996, fig.width = 10, fig.height = 6}
+econplot =
+    ggplot( weather.impact, aes( x = evtype, y = totaldmg, fill = evtype ) ) +
+    geom_bar( stat = "identity", show.legend = FALSE ) +
+    theme(
+        axis.text.x = element_text( angle = -60, hjust = 0 )
+    ) +
+    scale_y_continuous( expand = c(0, 0) ) +
+    ggtitle(
+        "Average Economic Impact of Weather Effects Per Year (after 1996)"
+    ) +
+    xlab( "Weather Event Type" ) +
+    ylab( "Damage (in dollars)" ) +
+    scale_fill_discrete( name = "" );
+
+print( econplot );
+
+```
+
+Future investigation should probably work to resolve issues with the NOAA data
+set in a way that is robust. In addition, focus should be given to
+examining the impact of hurricanes, heat, storm surge (which is related to
+hurricanes), and tsunamis.
+
+***
+***
